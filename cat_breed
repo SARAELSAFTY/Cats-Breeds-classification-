@@ -1,0 +1,296 @@
+import tensorflow as tf
+from tensorflow.keras import layers, models
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.applications import MobileNetV2
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
+import matplotlib.pyplot as plt
+import numpy as np
+import os
+
+# Set random seeds for reproducibility
+tf.random.set_seed(42)
+np.random.seed(42)
+
+class CatBreedClassifier:
+    def __init__(self, data_path, img_size=(224, 224), batch_size=32):
+        self.data_path = data_path
+        self.img_size = img_size
+        self.batch_size = batch_size
+        self.model = None
+        self.history = None
+        self.class_names = None
+        
+    def setup_data_generators(self):
+        """Setup data generators with augmentation for training"""
+        # Data augmentation for training
+        train_datagen = ImageDataGenerator(
+            rescale=1./255,
+            rotation_range=20,
+            width_shift_range=0.2,
+            height_shift_range=0.2,
+            horizontal_flip=True,
+            zoom_range=0.2,
+            shear_range=0.2,
+            fill_mode='nearest'
+        )
+        
+        # Only rescaling for validation and test
+        val_test_datagen = ImageDataGenerator(rescale=1./255)
+        
+        # Create generators
+        self.train_generator = train_datagen.flow_from_directory(
+            os.path.join(self.data_path, 'train'),
+            target_size=self.img_size,
+            batch_size=self.batch_size,
+            class_mode='categorical',
+            shuffle=True
+        )
+        
+        self.validation_generator = val_test_datagen.flow_from_directory(
+            os.path.join(self.data_path, 'validation'),
+            target_size=self.img_size,
+            batch_size=self.batch_size,
+            class_mode='categorical',
+            shuffle=False
+        )
+        
+        self.test_generator = val_test_datagen.flow_from_directory(
+            os.path.join(self.data_path, 'test'),
+            target_size=self.img_size,
+            batch_size=self.batch_size,
+            class_mode='categorical',
+            shuffle=False
+        )
+        
+        self.class_names = list(self.train_generator.class_indices.keys())
+        self.num_classes = len(self.class_names)
+        
+        print(f"Found {self.num_classes} classes: {self.class_names}")
+        print(f"Training samples: {self.train_generator.samples}")
+        print(f"Validation samples: {self.validation_generator.samples}")
+        print(f"Test samples: {self.test_generator.samples}")
+        
+    def create_model(self, use_transfer_learning=True):
+        """Create the CNN model"""
+        if use_transfer_learning:
+            # Use MobileNetV2 as base model (good for mobile deployment)
+            base_model = MobileNetV2(
+                weights='imagenet',
+                include_top=False,
+                input_shape=(*self.img_size, 3)
+            )
+            
+            # Freeze base model initially
+            base_model.trainable = False
+            
+            model = models.Sequential([
+                base_model,
+                layers.GlobalAveragePooling2D(),
+                layers.Dropout(0.2),
+                layers.Dense(128, activation='relu'),
+                layers.Dropout(0.2),
+                layers.Dense(self.num_classes, activation='softmax')
+            ])
+            
+        else:
+            # Custom CNN from scratch
+            model = models.Sequential([
+                layers.Conv2D(32, (3, 3), activation='relu', input_shape=(*self.img_size, 3)),
+                layers.MaxPooling2D(2, 2),
+                layers.Conv2D(64, (3, 3), activation='relu'),
+                layers.MaxPooling2D(2, 2),
+                layers.Conv2D(128, (3, 3), activation='relu'),
+                layers.MaxPooling2D(2, 2),
+                layers.Conv2D(128, (3, 3), activation='relu'),
+                layers.MaxPooling2D(2, 2),
+                layers.Flatten(),
+                layers.Dropout(0.5),
+                layers.Dense(512, activation='relu'),
+                layers.Dropout(0.5),
+                layers.Dense(self.num_classes, activation='softmax')
+            ])
+        
+        # Compile model
+        model.compile(
+            optimizer='adam',
+            loss='categorical_crossentropy',
+            metrics=['accuracy']
+        )
+        
+        self.model = model
+        return model
+    
+    def train_model(self, epochs=50, fine_tune_epochs=10):
+        """Train the model with callbacks"""
+        if self.model is None:
+            raise ValueError("Model not created. Call create_model() first.")
+        
+        # Callbacks
+        callbacks = [
+            EarlyStopping(
+                monitor='val_accuracy',
+                patience=10,
+                restore_best_weights=True
+            ),
+            ReduceLROnPlateau(
+                monitor='val_loss',
+                factor=0.2,
+                patience=5,
+                min_lr=1e-7
+            ),
+            ModelCheckpoint(
+                'best_cat_breed_model.h5',
+                monitor='val_accuracy',
+                save_best_only=True,
+                mode='max'
+            )
+        ]
+        
+        # Initial training
+        print("Starting initial training...")
+        self.history = self.model.fit(
+            self.train_generator,
+            epochs=epochs,
+            validation_data=self.validation_generator,
+            callbacks=callbacks
+        )
+        
+        # Fine-tuning (if using transfer learning)
+        if hasattr(self.model.layers[0], 'trainable'):
+            print("\nStarting fine-tuning...")
+            # Unfreeze the base model
+            self.model.layers[0].trainable = True
+            
+            # Use a lower learning rate for fine-tuning
+            self.model.compile(
+                optimizer=tf.keras.optimizers.Adam(1e-5),
+                loss='categorical_crossentropy',
+                metrics=['accuracy']
+            )
+            
+            # Continue training
+            fine_tune_history = self.model.fit(
+                self.train_generator,
+                epochs=epochs + fine_tune_epochs,
+                initial_epoch=len(self.history.history['loss']),
+                validation_data=self.validation_generator,
+                callbacks=callbacks
+            )
+            
+            # Merge histories
+            for key in self.history.history.keys():
+                self.history.history[key].extend(fine_tune_history.history[key])
+    
+    def plot_training_history(self):
+        """Plot training history"""
+        if self.history is None:
+            print("No training history available.")
+            return
+            
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
+        
+        # Plot accuracy
+        ax1.plot(self.history.history['accuracy'], label='Training Accuracy')
+        ax1.plot(self.history.history['val_accuracy'], label='Validation Accuracy')
+        ax1.set_title('Model Accuracy')
+        ax1.set_xlabel('Epoch')
+        ax1.set_ylabel('Accuracy')
+        ax1.legend()
+        ax1.grid(True)
+        
+        # Plot loss
+        ax2.plot(self.history.history['loss'], label='Training Loss')
+        ax2.plot(self.history.history['val_loss'], label='Validation Loss')
+        ax2.set_title('Model Loss')
+        ax2.set_xlabel('Epoch')
+        ax2.set_ylabel('Loss')
+        ax2.legend()
+        ax2.grid(True)
+        
+        plt.tight_layout()
+        plt.show()
+    
+    def evaluate_model(self):
+        """Evaluate model on test set"""
+        if self.model is None:
+            print("No model to evaluate.")
+            return
+            
+        test_loss, test_accuracy = self.model.evaluate(self.test_generator)
+        print(f"\nTest Accuracy: {test_accuracy:.4f}")
+        print(f"Test Loss: {test_loss:.4f}")
+        
+        return test_accuracy, test_loss
+    
+    def predict_image(self, image_path):
+        """Predict cat breed for a single image"""
+        if self.model is None:
+            print("No model loaded.")
+            return
+            
+        img = tf.keras.preprocessing.image.load_img(
+            image_path, 
+            target_size=self.img_size
+        )
+        img_array = tf.keras.preprocessing.image.img_to_array(img)
+        img_array = tf.expand_dims(img_array, 0) / 255.0
+        
+        predictions = self.model.predict(img_array)
+        predicted_class_idx = np.argmax(predictions[0])
+        predicted_class = self.class_names[predicted_class_idx]
+        confidence = predictions[0][predicted_class_idx]
+        
+        print(f"Predicted breed: {predicted_class}")
+        print(f"Confidence: {confidence:.4f}")
+        
+        # Show top 3 predictions
+        top_3_idx = np.argsort(predictions[0])[-3:][::-1]
+        print("\nTop 3 predictions:")
+        for i, idx in enumerate(top_3_idx):
+            breed = self.class_names[idx]
+            conf = predictions[0][idx]
+            print(f"{i+1}. {breed}: {conf:.4f}")
+        
+        return predicted_class, confidence
+    
+    def save_model(self, filepath='cat_breed_classifier.h5'):
+        """Save the trained model"""
+        if self.model is not None:
+            self.model.save(filepath)
+            print(f"Model saved as {filepath}")
+        
+    def load_model(self, filepath):
+        """Load a saved model"""
+        self.model = tf.keras.models.load_model(filepath)
+        print(f"Model loaded from {filepath}")
+
+# Usage example
+if __name__ == "__main__":
+    # Initialize classifier
+    classifier = CatBreedClassifier(
+        data_path="data",  # Your dataset path
+        img_size=(224, 224),
+        batch_size=32
+    )
+    
+    # Setup data
+    classifier.setup_data_generators()
+    
+    # Create model (using transfer learning)
+    model = classifier.create_model(use_transfer_learning=True)
+    print(model.summary())
+    
+    # Train model
+    classifier.train_model(epochs=30, fine_tune_epochs=10)
+    
+    # Plot training history
+    classifier.plot_training_history()
+    
+    # Evaluate on test set
+    classifier.evaluate_model()
+    
+    # Save model
+    classifier.save_model('cat_breed_classifier_final.h5')
+    
+    # Example prediction (replace with actual image path)
+    # classifier.predict_image('path/to/your/cat/image.jpg')

@@ -1,0 +1,367 @@
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+import tensorflow as tf
+import numpy as np
+from PIL import Image, ImageTk
+import os
+import cv2
+
+class CatBreedGUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Cat Breed Classifier")
+        self.root.geometry("800x700")
+        self.root.configure(bg='#2c3e50')
+        
+        # Model variables
+        self.model = None
+        self.class_names = []
+        self.current_image = None
+        self.current_image_path = None
+        
+        # Create GUI elements
+        self.create_widgets()
+        
+        # Try to load default model
+        self.load_default_model()
+    
+    def create_widgets(self):
+        # Title
+        title_label = tk.Label(
+            self.root, 
+            text="🐱 Cat Breed Classifier 🐱", 
+            font=("Arial", 24, "bold"),
+            bg='#2c3e50',
+            fg='#ecf0f1'
+        )
+        title_label.pack(pady=20)
+        
+        # Model loading frame
+        model_frame = tk.Frame(self.root, bg='#2c3e50')
+        model_frame.pack(pady=10)
+        
+        tk.Label(
+            model_frame, 
+            text="Model Status:", 
+            font=("Arial", 12),
+            bg='#2c3e50',
+            fg='#ecf0f1'
+        ).pack(side=tk.LEFT, padx=5)
+        
+        self.model_status = tk.Label(
+            model_frame, 
+            text="No model loaded", 
+            font=("Arial", 12, "bold"),
+            bg='#2c3e50',
+            fg='#e74c3c'
+        )
+        self.model_status.pack(side=tk.LEFT, padx=5)
+        
+        # Load model button
+        load_model_btn = tk.Button(
+            model_frame,
+            text="Load Model",
+            command=self.load_model,
+            bg='#3498db',
+            fg='white',
+            font=("Arial", 10, "bold"),
+            padx=15,
+            pady=5,
+            relief=tk.FLAT,
+            cursor="hand2"
+        )
+        load_model_btn.pack(side=tk.LEFT, padx=10)
+        
+        # Image upload frame
+        upload_frame = tk.Frame(self.root, bg='#2c3e50')
+        upload_frame.pack(pady=20)
+        
+        upload_btn = tk.Button(
+            upload_frame,
+            text="📁 Select Cat Image",
+            command=self.upload_image,
+            bg='#27ae60',
+            fg='white',
+            font=("Arial", 14, "bold"),
+            padx=250,
+            pady=250,
+            relief=tk.FLAT,
+            cursor="hand2"
+        )
+        upload_btn.pack()
+        
+        # Image display frame
+        image_frame = tk.Frame(self.root, bg='#34495e', relief=tk.RAISED, bd=2)
+        image_frame.pack(pady=1000, padx=1000, fill=tk.BOTH, expand=True)
+        
+        self.image_label = tk.Label(
+            image_frame,
+            text="No image selected\n\nSupported formats: JPG, PNG, JPEG",
+            font=("Arial", 12),
+            bg='#34495e',
+            fg='#bdc3c7',
+            height=1000,
+            width=1000
+        )
+        self.image_label.pack(expand=True)
+        
+        # Prediction frame
+        pred_frame = tk.Frame(self.root, bg='#2c3e50')
+        pred_frame.pack(pady=1000, padx=1000, fill=tk.X)
+        
+        # Predict button
+        self.predict_btn = tk.Button(
+            pred_frame,
+            text="🔍 Predict Breed",
+            command=self.predict_breed,
+            bg='#e67e22',
+            fg='white',
+            font=("Arial", 14, "bold"),
+            padx=30,
+            pady=10,
+            relief=tk.FLAT,
+            cursor="hand2",
+            state=tk.DISABLED
+        )
+        self.predict_btn.pack(pady=10)
+        
+        # Results frame
+        results_frame = tk.LabelFrame(
+            pred_frame,
+            text="Prediction Results",
+            font=("Arial", 12, "bold"),
+            bg='#2c3e50',
+            fg='#ecf0f1',
+            width=1000,
+            height=1000
+        )
+        results_frame.pack(fill=tk.X, pady=10)
+        
+        # Main prediction
+        self.main_pred_label = tk.Label(
+            results_frame,
+            text="",
+            font=("Arial", 16, "bold"),
+            bg='#2c3e50',
+            fg='#f39c12'
+        )
+        self.main_pred_label.pack(pady=5)
+        
+        # Confidence
+        self.confidence_label = tk.Label(
+            results_frame,
+            text="",
+            font=("Arial", 12),
+            bg='#2c3e50',
+            fg='#ecf0f1'
+        )
+        self.confidence_label.pack(pady=2)
+        
+        # Top 3 predictions
+        self.top3_label = tk.Label(
+            results_frame,
+            text="",
+            font=("Arial", 10),
+            bg='#2c3e50',
+            fg='#95a5a6',
+            justify=tk.LEFT
+        )
+        self.top3_label.pack(pady=5)
+        
+        # Progress bar
+        self.progress = ttk.Progressbar(
+            self.root,
+            length=400,
+            mode='indeterminate'
+        )
+        
+    def load_default_model(self):
+        """Try to load a default model file"""
+        default_models = [
+            'cat_breed_classifier_final.h5',
+            'best_cat_breed_model.h5',
+            'cat_breed_classifier.h5'
+        ]
+        
+        for model_file in default_models:
+            if os.path.exists(model_file):
+                try:
+                    self.model = tf.keras.models.load_model(model_file)
+                    self.load_class_names()
+                    self.model_status.config(
+                        text=f"✅ Model loaded: {model_file}",
+                        fg='#27ae60'
+                    )
+                    return
+                except Exception as e:
+                    continue
+    
+    def load_model(self):
+        """Load a trained model file"""
+        file_path = filedialog.askopenfilename(
+            title="Select Model File",
+            filetypes=[("H5 files", "*.h5"), ("All files", "*.*")]
+        )
+        
+        if file_path:
+            try:
+                self.model = tf.keras.models.load_model(file_path)
+                self.load_class_names()
+                self.model_status.config(
+                    text=f"✅ Model loaded: {os.path.basename(file_path)}",
+                    fg='#27ae60'
+                )
+                messagebox.showinfo("Success", "Model loaded successfully!")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to load model:\n{str(e)}")
+                self.model_status.config(
+                    text="❌ Failed to load model",
+                    fg='#e74c3c'
+                )
+    
+    def load_class_names(self):
+        """Load class names from dataset folder or use default"""
+        dataset_path = "dataset-ras-kucing/train"
+        if os.path.exists(dataset_path):
+            self.class_names = sorted([d for d in os.listdir(dataset_path) 
+                                     if os.path.isdir(os.path.join(dataset_path, d))])
+        else:
+            # Default cat breeds (you can modify this list)
+            self.class_names = [
+                'Abyssinian', 'Bengal', 'British_Shorthair', 'Maine_Coon',
+                'Persian', 'Ragdoll', 'Russian_Blue', 'Siamese', 'Sphynx'
+            ]
+    
+    def upload_image(self):
+        """Upload and display an image"""
+        file_path = filedialog.askopenfilename(
+            title="Select Cat Image",
+            filetypes=[
+                ("Image files", "*.jpg *.jpeg *.png *.bmp *.tiff"),
+                ("JPEG files", "*.jpg *.jpeg"),
+                ("PNG files", "*.png"),
+                ("All files", "*.*")
+            ]
+        )
+        
+        if file_path:
+            try:
+                # Load and display image
+                image = Image.open(file_path)
+                
+                # Resize image for display (maintain aspect ratio)
+                display_size = (400, 300)
+                image.thumbnail(display_size, Image.Resampling.LANCZOS)
+                
+                photo = ImageTk.PhotoImage(image)
+                self.image_label.config(image=photo, text="")
+                self.image_label.image = photo  # Keep a reference
+                
+                self.current_image_path = file_path
+                self.current_image = image
+                
+                # Enable predict button if model is loaded
+                if self.model is not None:
+                    self.predict_btn.config(state=tk.NORMAL)
+                
+                # Clear previous results
+                self.clear_results()
+                
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to load image:\n{str(e)}")
+    
+    def predict_breed(self):
+        """Predict the cat breed"""
+        if self.model is None:
+            messagebox.showwarning("Warning", "Please load a model first!")
+            return
+        
+        if self.current_image_path is None:
+            messagebox.showwarning("Warning", "Please select an image first!")
+            return
+        
+        try:
+            # Show progress
+            self.progress.pack(pady=10)
+            self.progress.start()
+            self.root.update()
+            
+            # Preprocess image
+            img = tf.keras.preprocessing.image.load_img(
+                self.current_image_path, 
+                target_size=(224, 224)
+            )
+            img_array = tf.keras.preprocessing.image.img_to_array(img)
+            img_array = tf.expand_dims(img_array, 0) / 255.0
+            
+            # Make prediction
+            predictions = self.model.predict(img_array, verbose=0)
+            
+            # Get results
+            predicted_class_idx = np.argmax(predictions[0])
+            predicted_class = self.class_names[predicted_class_idx]
+            confidence = predictions[0][predicted_class_idx]
+            
+            # Display main prediction
+            self.main_pred_label.config(
+                text=f"🐱 {predicted_class.replace('_', ' ')}"
+            )
+            
+            # Display confidence
+            confidence_text = f"Confidence: {confidence:.1%}"
+            confidence_color = '#27ae60' if confidence > 0.7 else '#f39c12' if confidence > 0.4 else '#e74c3c'
+            self.confidence_label.config(
+                text=confidence_text,
+                fg=confidence_color
+            )
+            
+            # Display top 3 predictions
+            top_3_idx = np.argsort(predictions[0])[-3:][::-1]
+            top3_text = "Top 3 Predictions:\n"
+            for i, idx in enumerate(top_3_idx):
+                breed = self.class_names[idx].replace('_', ' ')
+                conf = predictions[0][idx]
+                top3_text += f"{i+1}. {breed}: {conf:.1%}\n"
+            
+            self.top3_label.config(text=top3_text)
+            
+            # Stop progress
+            self.progress.stop()
+            self.progress.pack_forget()
+            
+        except Exception as e:
+            self.progress.stop()
+            self.progress.pack_forget()
+            messagebox.showerror("Error", f"Failed to predict:\n{str(e)}")
+    
+    def clear_results(self):
+        """Clear prediction results"""
+        self.main_pred_label.config(text="")
+        self.confidence_label.config(text="")
+        self.top3_label.config(text="")
+
+def main():
+    # Check if TensorFlow is available
+    try:
+        import tensorflow as tf
+        print(f"TensorFlow version: {tf.__version__}")
+    except ImportError:
+        print("TensorFlow not found. Please install it with: pip install tensorflow")
+        return
+    
+    # Create and run GUI
+    root = tk.Tk()
+    app = CatBreedGUI(root)
+    
+    # Center window
+    root.update_idletasks()
+    width = root.winfo_width()
+    height = root.winfo_height()
+    x = (root.winfo_screenwidth() // 2) - (width // 2)
+    y = (root.winfo_screenheight() // 2) - (height // 2)
+    root.geometry(f"{width}x{height}+{x}+{y}")
+    
+    root.mainloop()
+
+if __name__ == "__main__":
+    main()
